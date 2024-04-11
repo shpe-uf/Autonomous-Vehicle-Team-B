@@ -1,5 +1,6 @@
-import asyncio
 import cv2
+import asyncio
+import time
 from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 
@@ -21,7 +22,9 @@ turn_time_delay = 0.3
 dist = 0
 leftTrack = 10
 rightTrack = 12
-SERVO = 11  # Servo pin
+SERVO = 32  # Servo pin
+global detected_sign
+
 
 # Setup GPIO pins
 GPIO.setup([motorIn1, motorIn2, motorIn3, motorIn4, enL, enR, LEFT, RIGHT, TRIG, SERVO], GPIO.OUT)
@@ -44,6 +47,7 @@ picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
 picam2.start()
 
+
 # Initialize face cascade classifiers
 face_cascades = {
     "right": cv2.CascadeClassifier("cascade_right.xml"),
@@ -51,134 +55,147 @@ face_cascades = {
     "stopsign": cv2.CascadeClassifier("stop_OG.xml")
 }
 
-# Global variable for detected sign and a lock for thread-safe access
-detected_sign = None
-lock = asyncio.Lock()
 
-# Asynchronous function for ultrasonic sensor checking
-async def ULT_CHECK():
-    global dist
-    print("Measuring distance")
-    GPIO.output(TRIG, 1)
-    await asyncio.sleep(0.000001)
-    GPIO.output(TRIG, 0)
-    
-    while GPIO.input(ECHO) == 0:
-        pass
-    start = time.time()
-    
-    while GPIO.input(ECHO) == 1:
-        pass
-    stop = time.time()
-    dist = (stop - start) * 17000
-
-# Asynchronous function for line tracking
-async def LINETRACK():
-    left_sensor_active = GPIO.input(leftTrack) == 0  # is black
-    right_sensor_active = GPIO.input(rightTrack) == 0  #0 is black
-
-    if left_sensor_active and not right_sensor_active:
-        print("Adjusting Right")
-        GPIO.output(RIGHT, 1) 
-        servo.ChangeDutyCycle(8.5)
-        await asyncio.sleep(0.5)
-        GPIO.output(RIGHT, 0)  
-
-    elif not left_sensor_active and right_sensor_active:
-        print("Adjusting Left")
-        GPIO.output(LEFT, 1) 
-        servo.ChangeDutyCycle(6.5)
-        await asyncio.sleep(0.5)
-        GPIO.output(LEFT, 0)
-
-    else:
-        pL.ChangeDutyCycle(5)
-        pR.ChangeDutyCycle(5)
-
-    await asyncio.sleep(0.1)
-
-# Asynchronous function for stopping and waiting when a stop sign is detected
-async def STOP_AND_WAIT():
-    print("Stop sign detected, stopping")
-    while dist <= 5:
-        GPIO.output(LEFT, 1)
-        GPIO.output(RIGHT, 1)
-        await asyncio.sleep(0.5)
-        GPIO.output(LEFT, 0)
-        GPIO.output(RIGHT, 0)
-        await asyncio.sleep(0.5)
 
 # Asynchronous function for object detection
 async def detect_objects():
-    global detected_sign
+    global detected_sign  # Use global variable to track detected signs
+    servo.ChangeDutyCycle(7.5)  # Center the servo
+    detection_counter = 0  # Counter to keep track of continuous detections
+    no_sign_counter = 0  # Counter to keep track of continuous non-detections
+    DEBOUNCE_THRESHOLD = 7 # Number of continuous detections needed before acting
+
     try:
         while True:
-            im = picam2.capture_array()
-            grey = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-            new_sign = None
+            im = picam2.capture_array()  # Capture image from PiCamera
+            grey = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+            detections = {"right": [], "left": [], "stopsign": []}
+            sign_detected = False
 
+            # Detect signs using cascades
             for direction, cascade in face_cascades.items():
-                detections = cascade.detectMultiScale(grey, 1.1, 5)
-                if len(detections) > 0:
-                    new_sign = direction
-                    break  # Consider the first detected sign
-
-            async with lock:
-                if new_sign != detected_sign:
-                    detected_sign = new_sign  # Update the global detected_sign variable
+                detections[direction] = cascade.detectMultiScale(grey, 1.1, 5)
+                if len(detections[direction]) > 0:
+                    detected_sign = direction
+                    sign_detected = True
+                    if detected_sign == "stopsign" and detection_counter >= DEBOUNCE_THRESHOLD:
+                        await STOP()
+                        detection_counter = 0  # Reset the counter after taking action
+                        sign_detected = False
+                        
+                    elif detected_sign == "left" and detection_counter >= DEBOUNCE_THRESHOLD:
+                        print("Adjusting Left")
+                        GPIO.output(LEFT, GPIO.HIGH)
+                        servo.ChangeDutyCycle(6.5)  # Turn left
+                        await asyncio.sleep(0.5)
+                        GPIO.output(LEFT, GPIO.LOW)
+                        
+                    elif detected_sign == "right" and detection_counter >= DEBOUNCE_THRESHOLD:
+                        print("Adjusting Right")
+                        GPIO.output(RIGHT, GPIO.HIGH)
+                        servo.ChangeDutyCycle(8.5)  # Turn right
+                        await asyncio.sleep(0.5)
+                        GPIO.output(RIGHT, GPIO.LOW)
+                        
+            # Increment or reset detection counter based on whether a sign was detected
+            if sign_detected:
+                detection_counter += 1
+                no_sign_counter = 0  # Reset no-sign counter when a sign is detected
             
-            await asyncio.sleep(0)  # Yield control to allow other tasks to run
+            else:
+                detection_counter = 0  # Reset detection counter when no sign is detected
+                no_sign_counter += 1
+
+            # Line sensor logic integrated with object detection
+            left_sensor_active = GPIO.input(leftTrack) == 0  # Left sensor reads black
+            right_sensor_active = GPIO.input(rightTrack) == 0  # Right sensor reads black
+
+            if left_sensor_active and not right_sensor_active and not sign_detected:
+                print("Adjusting Right")
+                GPIO.output(RIGHT, GPIO.HIGH)
+                servo.ChangeDutyCycle(8.5)  # Turn right
+                await asyncio.sleep(0.5)
+                GPIO.output(RIGHT, GPIO.LOW)
+
+            elif not left_sensor_active and right_sensor_active and not sign_detected:
+                print("Adjusting Left")
+                GPIO.output(LEFT, GPIO.HIGH)
+                servo.ChangeDutyCycle(6.5)  # Turn left
+                await asyncio.sleep(0.5)
+                GPIO.output(LEFT, GPIO.LOW)
+            elif not sign_detected:
+                servo.ChangeDutyCycle(7.5)
+                
+            # Drive forward if no sign is detected
+            if no_sign_counter >= DEBOUNCE_THRESHOLD:
+                await FORWARD()
+                no_sign_counter = 0
+
+            global dist
+            print("Measuring distance")
+            GPIO.output(TRIG, 1)
+            await asyncio.sleep(0.000001)
+            GPIO.output(TRIG, 0)
+
+            while GPIO.input(ECHO) == 0:
+                pass
+            start = time.time()
+
+            while GPIO.input(ECHO) == 1:
+                pass
+            stop = time.time()
+            dist = (stop - start) * 17000
+            print(dist)
+            
+            if dist <= 10:
+                await STOP()
+                
+            # Display detected objects with rectangles
+            for direction, faces in detections.items():
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(im, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(im, direction, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+            cv2.imshow("Camera", im)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):  # Exit loop if 'q' is pressed
+                break
+
     finally:
         picam2.stop()
         cv2.destroyAllWindows()
 
-# Asynchronous function for driving the vehicle
-async def DRIVE():
-    global detected_sign
-    while True:
-        await ULT_CHECK()  # Continuously check for obstacles
-        await LINETRACK()  # Stay within the lane
 
-        async with lock:  # Access the detected_sign in a thread-safe manner
-            current_sign = detected_sign
-
-        if current_sign == "stopsign":
-            print("Stop sign detected, stopping the car")
-            # Stop the car by setting motor speeds to 0
-            pL.ChangeDutyCycle(0)
-            pR.ChangeDutyCycle(0)
-            await STOP_AND_WAIT()  # You might want to wait for a bit after stopping
-
-        elif current_sign == "left":
-            print("Left sign detected, turning left")
-            # Adjust the servo for a left turn
-            servo.ChangeDutyCycle(6.5)  # Adjust this value based on your servo setup
-            await asyncio.sleep(1)  # Adjust this sleep time based on how sharp you want the turn to be
-
-        elif current_sign == "right":
-            print("Right sign detected, turning right")
-            # Adjust the servo for a right turn
-            servo.ChangeDutyCycle(8.5)  # Adjust this value based on your servo setup
-            await asyncio.sleep(1)  # Adjust this sleep time based on how sharp you want the turn to be
-
-        # Reset the detected_sign to None after handling
-        async with lock:
-            detected_sign = None
-
-        # Add logic to continue driving forward or any other default behavior
-        # For example, setting motors to drive straight ahead at a standard speed
-        pL.ChangeDutyCycle(25)  # Adjust these values based on your setup and desired speed
-        pR.ChangeDutyCycle(25)
-        servo.ChangeDutyCycle(7.5)  # Adjust to set servo back to straight-ahead position
-
-        await asyncio.sleep(0.1)  # Small delay to allow other tasks to run
-
+async def FORWARD():
+    print("Driving")
+    GPIO.output(motorIn1, GPIO.HIGH)
+    GPIO.output(motorIn2, GPIO.LOW)
+    GPIO.output(motorIn3, GPIO.HIGH)
+    GPIO.output(motorIn4, GPIO.LOW)
+    pL.ChangeDutyCycle(25)
+    pR.ChangeDutyCycle(25)
+    
+    
+async def STOP():
+    print("Inside Stop and Wait (waiting...)")
+    GPIO.output(motorIn1, GPIO.LOW)
+    GPIO.output(motorIn2, GPIO.LOW)
+    GPIO.output(motorIn3, GPIO.LOW)
+    GPIO.output(motorIn4, GPIO.LOW)
+    GPIO.output(LEFT, 1)
+    GPIO.output(RIGHT, 1)
+    await asyncio.sleep(0.5)
+    GPIO.output(LEFT, 0)
+    GPIO.output(RIGHT, 0)
+    await asyncio.sleep(0.5)
+    
 # Main function to execute the driving logic and object detection concurrently
 async def main():
-    detect_task = asyncio.create_task(detect_objects())
-    drive_task = asyncio.create_task(DRIVE())
-    await asyncio.gather(detect_task, drive_task)
-
+# = asyncio.create_task(detect_objects())
+#ask2 = asyncio.create_task(DRIVE())
+#wait asyncio.gather(task1, task2)
+    await detect_objects()
 # Execute the main function
 if __name__ == "__main__":
+
     asyncio.run(main())
