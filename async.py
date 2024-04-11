@@ -21,7 +21,7 @@ dist = 0
 angle = 2  # This variable is unused in your original code
 leftTrack = 10
 rightTrack = 12
-SERVO = 11  # Servo pin
+SERVO = 32  # Servo pin
 
 # Setup GPIO pins
 GPIO.setup([motorIn1, motorIn2, motorIn3, motorIn4, enL, enR, LEFT, RIGHT, TRIG, SERVO], GPIO.OUT)
@@ -130,8 +130,8 @@ async def DRIVE():
         if dist >= 5:
             # If object is more than 5 units away, keep driving forward
             print('Driving')
-            pL.ChangeDutyCycle(50)
-            pR.ChangeDutyCycle(50)
+            pL.ChangeDutyCycle(25)
+            pR.ChangeDutyCycle(25)
             GPIO.output(motorIn1, GPIO.HIGH)
             GPIO.output(motorIn2, GPIO.LOW)
             GPIO.output(motorIn3, GPIO.HIGH)
@@ -156,7 +156,7 @@ if __name__ == "__main__":
     print('start')
     
     print('running')
-    pL.start(100)
-    pR.start(100)
+    pL.start(25)
+    pR.start(25)
    
     asyncio.run(main())
