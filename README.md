@@ -83,6 +83,7 @@ The code provided controls a Raspberry Pi-based robot with obstacle detection, l
 - **`signal_detection2.py`**: Used for testing multiple cascades for image detection. It allows you to test the performance of different cascades in recognizing various signals.
 - **`signal_detection1.py`**: Designed for testing a single cascade. This script is useful for focused testing on one particular type of signal.
 - **XML Files**: These are the cascade files used for image detection. They should be trained as described in the "Training Cascade Classifiers" section and placed in the same directory as your Python scripts for the project.
+- **Assembly Mounts**: This folder includes all the 3D-printed mounts designed for securing the vehicle's sensors. It features detailed CAD drawings and specifications essential for proper mount fabrication and sensor integration. 
 
 Please make sure to place all your scripts and XML files in the same directory and run `Camera_Drive_Merge.py` as the main script to start the project.
 
